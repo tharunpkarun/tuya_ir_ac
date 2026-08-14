@@ -1,0 +1,13 @@
+{
+  "domain": "tuya_ir_ac",
+  "name": "Tuya IR Air Conditioner",
+  "version": "1.2.0",
+  "config_flow": true,
+  "dependencies": ["tuya"],
+  "documentation": "https://github.com/tharunpkarun/tuya_ir_ac",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/tharunpkarun/tuya_ir_ac/issues",
+  "requirements": ["tinytuya==1.20.0"],
+  "codeowners": ["@tharunpkarun"]
+}

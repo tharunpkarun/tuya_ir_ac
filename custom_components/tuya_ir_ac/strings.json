@@ -1,0 +1,30 @@
+{
+  "title": "Tuya IR Air Conditioner",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Tuya devices",
+        "description": "Select the virtual infrared air conditioner and the physical thermostat that provides room temperature and humidity.",
+        "data": {
+          "ac_device_id": "Virtual IR air conditioner",
+          "thermostat_device_id": "IR thermostat"
+        }
+      },
+      "reconfigure": {
+        "title": "Change Tuya devices",
+        "description": "Select the Tuya devices used by this integration.",
+        "data": {
+          "ac_device_id": "Virtual IR air conditioner",
+          "thermostat_device_id": "IR thermostat"
+        }
+      }
+    },
+    "error": {
+      "same_device": "Select two different devices.",
+      "device_not_found": "A selected device is no longer available from the Tuya integration."
+    },
+    "abort": {
+      "tuya_not_ready": "The official Tuya integration must be loaded before configuring this integration."
+    }
+  }
+}
