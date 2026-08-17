@@ -7,7 +7,13 @@ The integration uses the official Home Assistant Tuya integration for IR command
 ## Features
 
 - Climate entity with heating, cooling, automatic, dry, and fan-only modes
-- Optimistic restoration of the last commanded mode, temperature, and fan speed
+- Reliable power-on: Tuya IR commands are sent one at a time with one retry for
+  Tuya cloud error 1109
+- Optimistic restoration of the last successfully commanded mode, temperature,
+  and fan speed
+- A temperature change while off starts the AC in Cool mode
+- HA keeps the assumed IR state from its own commands; Tuya virtual-remote
+  status is not treated as physical AC feedback
 - Local temperature and humidity sensors
 - Automatic Tuya UDP IP rediscovery after a network error
 - Config-flow device selection without hard-coded device IDs or IP addresses

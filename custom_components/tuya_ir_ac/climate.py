@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
+
+from tuya_sharing.exceptions import ApiRequestException
 
 from homeassistant.components.climate import (
     ATTR_FAN_MODE,
@@ -25,8 +29,6 @@ from .const import (
     FAN_TO_TUYA,
     MODE_TO_TUYA,
     TUYA_DOMAIN,
-    TUYA_TO_FAN,
-    TUYA_TO_MODE,
 )
 
 HVAC_MODES = [
@@ -38,6 +40,11 @@ HVAC_MODES = [
     HVACMode.DRY,
 ]
 FAN_MODES = ["auto", "low", "medium", "high"]
+TUYA_NETWORK_ERROR_CODE = "1109"
+COMMAND_RETRY_DELAY_SECONDS = 1
+COMMAND_SETTLE_SECONDS = 0.25
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -86,9 +93,9 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
             model=device.product_name,
             name=device.name,
         )
-        # Seed from the last Homebridge-cached Tuya IR state. This is only used
-        # for the one-time migration; subsequent restarts use RestoreEntity.
-        self._is_on = True
+        # An IR remote cannot verify the physical appliance state. Start safely
+        # as off, then restore the last successful Home Assistant command.
+        self._is_on = False
         self._last_mode = HVACMode.COOL
         self._target_temperature = 25.0
         self._fan_mode = "auto"
@@ -152,7 +159,6 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
             if (fan_mode := last_state.attributes.get(ATTR_FAN_MODE)) in FAN_TO_TUYA:
                 self._fan_mode = fan_mode
 
-        self._apply_reported_status()
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
@@ -175,32 +181,8 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         updated_status_properties: list[str] | None,
         dp_timestamps: dict[str, int] | None,
     ) -> None:
-        """Use any future state reports while remaining optimistic."""
-        self._apply_reported_status()
+        """Refresh availability without trusting virtual-remote state."""
         self.async_write_ha_state()
-
-    def _apply_reported_status(self) -> None:
-        """Apply Tuya's optional virtual-remote state fields."""
-        status = self.device.status
-        if "power" in status:
-            value = status["power"]
-            self._is_on = value is True or str(value).lower() in {"1", "true", "on"}
-        if "mode" in status:
-            try:
-                mode = TUYA_TO_MODE.get(int(status["mode"]))
-                if mode is not None:
-                    self._last_mode = HVACMode(mode)
-            except (TypeError, ValueError):
-                pass
-        if "temp" in status:
-            self._target_temperature = self._normalize_temperature(status["temp"])
-        if "wind" in status:
-            try:
-                fan_mode = TUYA_TO_FAN.get(int(status["wind"]))
-                if fan_mode is not None:
-                    self._fan_mode = fan_mode
-            except (TypeError, ValueError):
-                pass
 
     @staticmethod
     def _normalize_temperature(value: Any) -> float:
@@ -208,7 +190,7 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         return float(max(16, min(30, round(float(value)))))
 
     def _power_on_commands(self) -> list[dict[str, Any]]:
-        """Build a complete IR state for a deterministic power-on command."""
+        """Build the ordered IR state used after powering on."""
         return [
             {"code": "PowerOn", "value": "PowerOn"},
             {"code": "M", "value": MODE_TO_TUYA[self._last_mode]},
@@ -217,16 +199,45 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         ]
 
     async def _async_send(self, commands: list[dict[str, Any]]) -> None:
-        """Send verified virtual-remote commands through Tuya Sharing."""
-        await self.hass.async_add_executor_job(
-            self.manager.send_commands, self.device.id, commands
-        )
+        """Send one virtual-remote command, retrying Tuya's transient 1109 once."""
+        for attempt in range(2):
+            try:
+                await self.hass.async_add_executor_job(
+                    self.manager.send_commands, self.device.id, commands
+                )
+                return
+            except ApiRequestException as err:
+                if str(err.error_code) != TUYA_NETWORK_ERROR_CODE or attempt == 1:
+                    raise
+                command_codes = ", ".join(
+                    str(command.get("code", "unknown")) for command in commands
+                )
+                _LOGGER.warning(
+                    "Tuya command %s for %s returned 1109; retrying once",
+                    command_codes,
+                    self.device.id,
+                )
+                await asyncio.sleep(COMMAND_RETRY_DELAY_SECONDS)
+
+    async def _async_start(self) -> None:
+        """Power on, then apply mode, temperature, and fan settings in order."""
+        commands = self._power_on_commands()
+        await self._async_send([commands[0]])
+
+        # The power command succeeded, so retain On even if a later tuning
+        # command fails and surfaces an error to the caller.
+        self._is_on = True
+        self.async_write_ha_state()
+
+        for command in commands[1:]:
+            await asyncio.sleep(COMMAND_SETTLE_SECONDS)
+            await self._async_send([command])
+
+        self.async_write_ha_state()
 
     async def async_turn_on(self) -> None:
         """Turn on with the complete restored IR state."""
-        await self._async_send(self._power_on_commands())
-        self._is_on = True
-        self.async_write_ha_state()
+        await self._async_start()
 
     async def async_turn_off(self) -> None:
         """Turn off the air conditioner."""
@@ -242,15 +253,14 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         if hvac_mode.value not in MODE_TO_TUYA:
             return
 
-        was_off = not self._is_on
-        self._last_mode = hvac_mode
-        if was_off:
-            await self._async_send(self._power_on_commands())
+        if not self._is_on:
+            self._last_mode = hvac_mode
+            await self._async_start()
         else:
             await self._async_send(
                 [{"code": "M", "value": MODE_TO_TUYA[hvac_mode]}]
             )
-        self._is_on = True
+            self._last_mode = hvac_mode
         self.async_write_ha_state()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -260,7 +270,11 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         self._target_temperature = self._normalize_temperature(
             kwargs[ATTR_TEMPERATURE]
         )
-        if self._is_on:
+        if not self._is_on:
+            # The Home app's slider should be a reliable way to start an IR AC.
+            self._last_mode = HVACMode.COOL
+            await self._async_start()
+        else:
             await self._async_send(
                 [{"code": "T", "value": int(self._target_temperature)}]
             )
@@ -270,9 +284,9 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         """Set a fan speed, sending it immediately only when on."""
         if fan_mode not in FAN_TO_TUYA:
             return
-        self._fan_mode = fan_mode
         if self._is_on:
             await self._async_send(
                 [{"code": "F", "value": FAN_TO_TUYA[fan_mode]}]
             )
+        self._fan_mode = fan_mode
         self.async_write_ha_state()
