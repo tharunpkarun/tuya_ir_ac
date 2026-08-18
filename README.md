@@ -7,8 +7,10 @@ The integration uses the official Home Assistant Tuya integration for IR command
 ## Features
 
 - Climate entity with heating, cooling, automatic, dry, and fan-only modes
-- Reliable power-on: Tuya IR commands are sent one at a time with one retry for
-  Tuya cloud error 1109
+- Reliable command delivery: Tuya IR commands are sent one at a time with one
+  retry for Tuya cloud error 1109. The integration bypasses Tuya Sharing's
+  ten-second duplicate-command cache, which otherwise silently discards a
+  retry or repeated HomeKit Off request after a failed cloud command.
 - Optimistic restoration of the last successfully commanded mode, temperature,
   and fan speed
 - A temperature change while off starts the AC in Cool mode

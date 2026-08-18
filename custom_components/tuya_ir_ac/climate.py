@@ -198,10 +198,26 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
             {"code": "F", "value": FAN_TO_TUYA[self._fan_mode]},
         ]
 
+    def _clear_tuya_command_dedupe(self) -> None:
+        """Allow a retry or repeated HomeKit request to reach Tuya.
+
+        Tuya Sharing caches the last command per device for ten seconds. It
+        records the command before making the cloud request, which means a
+        retry after error 1109 would otherwise be silently discarded and look
+        successful to Home Assistant. IR remotes have no state acknowledgement,
+        so deliberately-issued commands must not be swallowed by that cache.
+        """
+        repository = getattr(self.manager, "device_repository", None)
+        command_filter = getattr(repository, "filter", None)
+        last_call_time = getattr(command_filter, "last_call_time", None)
+        if isinstance(last_call_time, dict):
+            last_call_time.pop(self.device.id, None)
+
     async def _async_send(self, commands: list[dict[str, Any]]) -> None:
         """Send one virtual-remote command, retrying Tuya's transient 1109 once."""
         for attempt in range(2):
             try:
+                self._clear_tuya_command_dedupe()
                 await self.hass.async_add_executor_job(
                     self.manager.send_commands, self.device.id, commands
                 )
